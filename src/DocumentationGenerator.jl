@@ -75,6 +75,22 @@ function readme_docs(package, root, pkgroot)
     end
 end
 
+function parse_project(root)
+    project_path = joinpath(root, "Project.toml")
+    if isfile(project_path)
+        toml = Pkg.TOML.parsefile(project_path)
+        docs = get(get(toml, "metadata", Dict()), "documentation", Dict())
+        if haskey(docs, "hosted")
+            return :hosted, docs["hosted"]
+        elseif haskey(docs, "gitrepo")
+            return :gitrepo, docs["gitrepo"]
+        elseif haskey(docs, "dir")
+            return :dir, joinpath(root, docs["dir"])
+        end
+    end
+    return :dir, joinpath(root, "docs")
+end
+
 using Markdown
 """
     copylocallinks(originalreadme, readmepath)
@@ -183,6 +199,7 @@ function install_and_use(pspec)
     try
         Pkg.add(pspec)
     catch e
+        @error exception=e
         throw(PkgNoWork(pspec.name))
     end
     pkg_sym = Symbol(pspec.name)

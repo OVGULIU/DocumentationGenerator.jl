@@ -7,6 +7,23 @@ function create_docs(pspec::Pkg.Types.PackageSpec, buildpath)
     _module, rootdir = DocumentationGenerator.install_and_use(pspec)
     pkgname = pspec.name
 
+    type, uri = DocumentationGenerator.parse_project(rootdir)
+    @info "$(pkgname) specifies docs of type $(type)"
+
+    if type === :dir
+        @info("building `dir` docs")
+        return build_local_dir_docs(pkgname, _module, rootdir, buildpath, uri)
+    elseif type === :gitrepo
+        @info("building `gitrepo` docs")
+        return build_git_docs(pkgname, rootdir, buildpath, uri)
+    elseif type === :hosted
+        @info("building `hosted` docs")
+        return build_hosted_docs(pkgname, rootdir, buildpath, uri)
+    end
+    @error("invalid doctype")
+end
+
+function build_local_dir_docs(pkgname, _module, rootdir, buildpath, uri)
     # package doesn't load, so let's only use the README
     if _module === nothing
         return mktempdir() do root
@@ -18,7 +35,7 @@ function create_docs(pspec::Pkg.Types.PackageSpec, buildpath)
 
     # actual Documenter docs
     try
-        for docdir in joinpath.(rootdir, ("docs", "doc"))
+        for docdir in (uri, joinpath.(rootdir, ("docs", "doc"))...)
             if isdir(docdir)
                 makefile = joinpath(docdir, "make.jl")
                 # create customized makefile with removed deploydocs + modified makedocs
@@ -43,6 +60,49 @@ function create_docs(pspec::Pkg.Types.PackageSpec, buildpath)
     end
 end
 
+function build_hosted_docs(pkgname, rootdir, buildpath, uri)
+    # js redirect
+    open(joinpath(buildpath, "index.html"), "w") do io
+        println(io,
+            """
+            <!DOCTYPE html>
+            <html>
+                <head>
+                    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+                    <script type="text/javascript">
+                        window.onload = function () {
+                            window.location.replace("$(uri)");
+                        }
+                    </script>
+                </head>
+                <body>
+                    Redirecting to <a href="$(uri)">$(uri)</a>.
+                </body>
+            </html>
+            """
+        )
+    end
+    # download search index
+    try
+        download(uri*"/search_index.js", joinpath(buildpath, "search_index.js"))
+    catch err
+        @error("search index download failed for $(uri)", exception = err)
+    end
+    return :real, rootdir
+end
+
+function build_git_docs(pkgname, rootdir, buildpath, uri)
+    mktempdir() do dir
+        cd(dir)
+        run(`git clone --depth=1 $(uri) docsource`)
+        docsproject = joinpath(dir, "docsource")
+        cd(docsproject)
+        build_local_dir_docs(pkgname, true, docsproject, buildpath, "")
+    end
+
+    return :real, rootdir
+end
+
 function license(repo, api = GitHub.DEFAULT_API; options...)
     results, page_data = GitHub.gh_get_paged_json(api, "/repos/$(GitHub.name(repo))/license"; options...)
     return results, page_data
@@ -64,12 +124,13 @@ end
 function package_docs(name, url, version, buildpath)
     pspec = PackageSpec(name = name, version = version)
     @info("Generating docs for $name")
-    doctype = :default
     meta = Dict()
     meta["name"] = name
     meta["url"] = url
     meta["version"] = version
     meta["installs"] = false
+
+    doctype = :default
     try
         @info("building: $name")
         mktempdir() do envdir
